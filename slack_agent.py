@@ -52,8 +52,9 @@ DEFAULT_URL = (
     "http://168.119.244.229/api/v2/serp/tours"
     "?available_spaces=1&currency=rub&group_size=10&lang=ru&sort_dir=desc&take=20"
     "&is_period_strict=1"
-    "&period%5B0%5D%5Bfrom%5D=24.05.2026&period%5B0%5D%5Bto%5D=25.05.2026"
+    "&period%5B0%5D%5Bfrom%5D=24.05.2026&period%5B0%5D%5Bto%5D=25.06.2026"
     "&languages%5B0%5D=1151&sort_by=rank_no_resident"
+    "&loc%5B0%5D%5Btype%5D=country&loc%5B0%5D%5Bid%5D=287"
 )
 YOUTRAVEL_URL = os.environ.get("YOUTRAVEL_URL", DEFAULT_URL)
 HTTP_TIMEOUT = float(os.environ.get("HTTP_TIMEOUT", "20"))
@@ -357,174 +358,300 @@ def _register_cyrillic_fonts() -> None:
         log.warning(f"font registration failed: {e}")
 
 
-def generate_pdf(tours: list[dict[str, Any]], output_path: str) -> str:
-    """Брендированный PDF с обложкой и страницей на тур.
-    Возвращает путь к собранному файлу."""
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.platypus import (
-        BaseDocTemplate, Frame, PageTemplate, PageBreak, Paragraph,
-        Spacer, Table, TableStyle, Image as RLImage,
-    )
-
-    _register_cyrillic_fonts()
-
-    purple = colors.HexColor(BRAND["purple"])
-    purple_dark = colors.HexColor(BRAND["purple_dark"])
-    green = colors.HexColor(BRAND["green"])
-    green_pale = colors.HexColor(BRAND["green_pale"])
-    night = colors.HexColor(BRAND["night"])
-    muted = colors.HexColor(BRAND["muted"])
-
-    base = getSampleStyleSheet()
-    style_h1 = ParagraphStyle("h1", parent=base["Heading1"], fontName=_PDF_FONT_BOLD,
-                              fontSize=28, leading=32, textColor=purple, spaceAfter=10)
-    style_h2 = ParagraphStyle("h2", parent=base["Heading2"], fontName=_PDF_FONT_BOLD,
-                              fontSize=18, leading=22, textColor=purple, spaceAfter=8)
-    style_lead = ParagraphStyle("lead", parent=base["Italic"], fontName=_PDF_FONT_ITALIC,
-                                fontSize=14, leading=18, textColor=purple_dark, spaceAfter=6)
-    style_body = ParagraphStyle("body", parent=base["BodyText"], fontName=_PDF_FONT_REGULAR,
-                                fontSize=11, leading=15, textColor=night)
-    style_meta = ParagraphStyle("meta", parent=style_body, textColor=muted, fontSize=9)
-    style_link = ParagraphStyle("link", parent=style_body, fontName=_PDF_FONT_BOLD,
-                                fontSize=12, textColor=purple)
-
-    def draw_brand_header(canvas, doc):
-        """Фиолетовая полоска сверху + 'YouTravel.me' + слоган внизу."""
-        canvas.saveState()
-        w, h = A4
-        # Верхняя плашка
-        canvas.setFillColor(purple)
-        canvas.rect(0, h - 1.2 * cm, w, 1.2 * cm, fill=1, stroke=0)
-        canvas.setFillColor(colors.white)
-        canvas.setFont(_PDF_FONT_BOLD, 12)
-        canvas.drawString(2 * cm, h - 0.8 * cm, BRAND_NAME)
-        # Зелёная стрелка-акцент
-        canvas.setFillColor(green)
-        canvas.rect(2 * cm + 3.2 * cm, h - 0.95 * cm, 0.6 * cm, 0.25 * cm, fill=1, stroke=0)
-
-        # Низ
-        canvas.setStrokeColor(purple)
-        canvas.setLineWidth(0.5)
-        canvas.line(2 * cm, 1.2 * cm, w - 2 * cm, 1.2 * cm)
-        canvas.setFillColor(muted)
-        canvas.setFont(_PDF_FONT_REGULAR, 8)
-        canvas.drawString(2 * cm, 0.8 * cm, f"{BRAND_NAME}  ·  {TAGLINE}")
-        canvas.drawRightString(w - 2 * cm, 0.8 * cm, f"стр. {doc.page}")
-        canvas.restoreState()
-
-    doc = BaseDocTemplate(
-        output_path,
-        pagesize=A4,
-        leftMargin=2 * cm, rightMargin=2 * cm,
-        topMargin=2 * cm, bottomMargin=2 * cm,
-        title="Подборка туров · YouTravel.me",
-        author="YouTravel.me",
-    )
-    frame = Frame(doc.leftMargin, doc.bottomMargin,
-                  doc.width, doc.height, id="main")
-    doc.addPageTemplates([PageTemplate(id="brand", frames=[frame],
-                                       onPage=draw_brand_header)])
-
-    story: list[Any] = []
-
-    # ---- Обложка ----
-    story.append(Spacer(1, 4 * cm))
-    story.append(Paragraph("Авторская<br/>подборка туров", style_h1))
-    story.append(Paragraph(TAGLINE, style_lead))
-    story.append(Spacer(1, 0.6 * cm))
-    story.append(Paragraph(
-        f"Подготовлено {datetime.now().strftime('%d.%m.%Y')}", style_meta))
-    story.append(PageBreak())
-
-    # ---- По одной странице на тур ----
-    for i, t in enumerate(tours, 1):
-        story.append(Paragraph(f"{i}. {t['title']}", style_h2))
-        story.append(Spacer(1, 0.2 * cm))
-
-        # Изображение
-        photo_flowable = _fetch_image_flowable(t.get("photo"), max_w_cm=16)
-        if photo_flowable is not None:
-            story.append(photo_flowable)
-            story.append(Spacer(1, 0.4 * cm))
-
-        # Таблица с данными тура
-        dates = (
-            f"{t['date_from']} – {t['date_to']}"
-            if t.get("date_from") and t.get("date_to") else "—"
-        )
-        data = [
-            ["Направление", t.get("region") or "—"],
-            ["Даты", dates],
-            ["Цена", t.get("price") or "—"],
-        ]
-        info = Table(data, colWidths=[4 * cm, 12 * cm])
-        info.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (0, -1), green_pale),
-            ("TEXTCOLOR", (0, 0), (0, -1), purple_dark),
-            ("FONTNAME", (0, 0), (0, -1), _PDF_FONT_BOLD),
-            ("FONTNAME", (1, 0), (1, -1), _PDF_FONT_REGULAR),
-            ("FONTSIZE", (0, 0), (-1, -1), 11),
-            ("TOPPADDING", (0, 0), (-1, -1), 8),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-            ("LEFTPADDING", (0, 0), (-1, -1), 12),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LINEBELOW", (0, 0), (-1, -2), 0.3, colors.white),
-        ]))
-        story.append(info)
-
-        # CTA-ссылка
-        if t.get("url"):
-            story.append(Spacer(1, 0.6 * cm))
-            story.append(Paragraph(
-                f'<a href="{t["url"]}" color="{BRAND["purple"]}">'
-                f'Открыть тур на youtravel.me →</a>',
-                style_link,
-            ))
-
-        if i < len(tours):
-            story.append(PageBreak())
-
-    doc.build(story)
-    return output_path
+def _wrap_text(text: str, font_name: str, font_size: float, max_width_pt: float) -> list[str]:
+    """Простой word-wrap по ширине шрифта."""
+    from reportlab.pdfbase import pdfmetrics
+    if not text:
+        return [""]
+    words = text.split()
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        test = " ".join(current + [word])
+        if pdfmetrics.stringWidth(test, font_name, font_size) <= max_width_pt or not current:
+            current.append(word)
+        else:
+            lines.append(" ".join(current))
+            current = [word]
+    if current:
+        lines.append(" ".join(current))
+    return lines
 
 
-def _fetch_image_flowable(url: str | None, max_w_cm: float = 16):
-    """Скачать изображение и обернуть в reportlab Image. None при ошибке."""
+def _fetch_cover_image(url: str | None, target_w_pt: float, target_h_pt: float):
+    """Скачать и обрезать картинку под target размер (cover-fit). Возвращает BytesIO или None."""
     if not url:
         return None
     try:
-        with httpx.Client(timeout=10, follow_redirects=True) as http:
+        with httpx.Client(timeout=12, follow_redirects=True) as http:
             r = http.get(url)
             r.raise_for_status()
             data = r.content
-    except Exception as e:
-        log.warning(f"image fetch failed: {url}: {e}")
-        return None
-
-    try:
         from PIL import Image as PILImage
-        from reportlab.lib.units import cm
-        from reportlab.platypus import Image as RLImage
-
-        bio = io.BytesIO(data)
-        # Открываем для определения размера и конвертации, если нужно
-        pil = PILImage.open(bio)
+        pil = PILImage.open(io.BytesIO(data))
         pil.load()
         if pil.mode not in ("RGB", "L"):
             pil = pil.convert("RGB")
+        # cover-fit: обрезать так, чтобы аспект совпал с целевым
+        target_aspect = target_w_pt / target_h_pt
+        img_aspect = pil.width / pil.height
+        if img_aspect > target_aspect:
+            new_w = int(pil.height * target_aspect)
+            left = (pil.width - new_w) // 2
+            pil = pil.crop((left, 0, left + new_w, pil.height))
+        else:
+            new_h = int(pil.width / target_aspect)
+            top = (pil.height - new_h) // 2
+            pil = pil.crop((0, top, pil.width, top + new_h))
         out = io.BytesIO()
         pil.save(out, format="JPEG", quality=85)
         out.seek(0)
-
-        max_w_pt = max_w_cm * cm
-        ratio = pil.height / pil.width
-        return RLImage(out, width=max_w_pt, height=max_w_pt * ratio)
+        return out
     except Exception as e:
-        log.warning(f"image render failed: {e}")
+        log.warning(f"image fetch/render failed for {url}: {e}")
         return None
+
+
+def generate_pdf(tours: list[dict[str, Any]], output_path: str) -> str:
+    """PDF в email-style: hero photo + бейдж + eyebrow + h1 + инфо-карточка + CTA.
+
+    Каждый тур = одна страница A4. Используется фото из items.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen.canvas import Canvas
+
+    _register_cyrillic_fonts()
+
+    # Палитра из брендбука + email-референса
+    purple       = colors.HexColor(BRAND["purple"])       # #771F96
+    purple_dark  = colors.HexColor(BRAND["purple_dark"])  # #582868
+    purple_pale  = colors.HexColor("#F4ECFA")             # фон бейджей/плашек
+    green_btn    = colors.HexColor("#9DB319")             # CTA-кнопка
+    green_badge  = colors.HexColor("#ABC232")             # статус-бейдж на фото
+    night        = colors.HexColor(BRAND["night"])        # #242A37 — основной текст
+    muted        = colors.HexColor("#828296")             # eyebrow
+    muted2       = colors.HexColor("#727281")             # subtitle
+    paper        = colors.HexColor("#F6F7FA")             # фон инфо-карточки
+    divider      = colors.HexColor("#E2E6EC")             # тонкие разделители
+
+    W, H = A4
+    c = Canvas(output_path, pagesize=A4)
+    c.setTitle(f"{BRAND_NAME} · Подборка туров")
+    c.setAuthor(BRAND_NAME)
+
+    # ─────────────────────────── Обложка ───────────────────────────
+    margin_x = 2 * cm
+
+    c.setFillColor(purple)
+    c.setFont(_PDF_FONT_BOLD, 16)
+    c.drawString(margin_x, H - 2.2 * cm, "YouTravel.me")
+
+    # Зелёный акцент
+    c.setFillColor(green_btn)
+    c.rect(margin_x, H - 7.5 * cm, 1.2 * cm, 0.2 * cm, fill=1, stroke=0)
+
+    # Большой заголовок
+    c.setFillColor(night)
+    c.setFont(_PDF_FONT_BOLD, 38)
+    c.drawString(margin_x, H - 9.2 * cm, "Авторская")
+    c.drawString(margin_x, H - 10.6 * cm, "подборка туров")
+
+    # Слоган
+    c.setFillColor(purple_dark)
+    c.setFont(_PDF_FONT_ITALIC, 14)
+    c.drawString(margin_x, H - 11.5 * cm, TAGLINE)
+
+    # Дата
+    c.setFillColor(muted)
+    c.setFont(_PDF_FONT_REGULAR, 11)
+    c.drawString(margin_x, H - 13 * cm, f"Подготовлено {datetime.now().strftime('%d.%m.%Y')}")
+
+    # Подвал обложки
+    c.setStrokeColor(divider)
+    c.setLineWidth(0.5)
+    c.line(margin_x, 2 * cm, W - margin_x, 2 * cm)
+    c.setFillColor(muted)
+    c.setFont(_PDF_FONT_REGULAR, 9)
+    c.drawString(margin_x, 1.5 * cm, "youtravel.me · авторские туры, придуманные людьми")
+
+    c.showPage()
+
+    # ─────────────────────── Страницы туров ───────────────────────
+    for idx, tour in enumerate(tours, 1):
+        _draw_tour_page(
+            c, idx, len(tours), tour, W, H,
+            purple, purple_dark, purple_pale,
+            green_btn, green_badge,
+            night, muted, muted2, paper, divider,
+        )
+        c.showPage()
+
+    c.save()
+    return output_path
+
+
+def _draw_tour_page(
+    c, idx: int, total: int, tour: dict[str, Any],
+    W: float, H: float,
+    purple, purple_dark, purple_pale,
+    green_btn, green_badge,
+    night, muted, muted2, paper, divider,
+) -> None:
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.lib.utils import ImageReader
+
+    margin_x = 1.5 * cm
+    page_pad_top = 1.5 * cm
+    page_pad_bot = 1.8 * cm
+
+    # ── Лого/заголовок сверху ──────────────────────────────────────
+    c.setFillColor(purple)
+    c.setFont(_PDF_FONT_BOLD, 13)
+    c.drawString(margin_x, H - 1.2 * cm, "YouTravel.me")
+    c.setFillColor(muted)
+    c.setFont(_PDF_FONT_REGULAR, 9)
+    c.drawRightString(W - margin_x, H - 1.2 * cm, f"Тур {idx} из {total}")
+
+    # ── Карточка ──────────────────────────────────────────────────
+    card_x = margin_x
+    card_w = W - 2 * margin_x
+    card_top = H - page_pad_top - 0.4 * cm
+    card_bot = page_pad_bot + 1 * cm
+    card_h = card_top - card_bot
+
+    # Лёгкая обводка карточки + белый фон
+    c.setFillColor(colors.white)
+    c.setStrokeColor(divider)
+    c.setLineWidth(0.5)
+    c.rect(card_x, card_bot, card_w, card_h, fill=1, stroke=1)
+
+    # ── Hero photo ────────────────────────────────────────────────
+    hero_h = 6.5 * cm
+    hero_y = card_top - hero_h
+    photo_data = _fetch_cover_image(tour.get("photo"), card_w, hero_h)
+
+    if photo_data is not None:
+        try:
+            c.drawImage(ImageReader(photo_data), card_x, hero_y, card_w, hero_h,
+                        preserveAspectRatio=False, mask="auto")
+        except Exception as e:
+            log.warning(f"drawImage failed: {e}")
+            photo_data = None
+    if photo_data is None:
+        # placeholder
+        c.setFillColor(purple_pale)
+        c.rect(card_x, hero_y, card_w, hero_h, fill=1, stroke=0)
+        c.setFillColor(purple)
+        c.setFont(_PDF_FONT_BOLD, 14)
+        c.drawCentredString(card_x + card_w / 2, hero_y + hero_h / 2, "YouTravel.me")
+
+    # Зелёный бейдж сверху-слева на фото
+    badge_text = "АВТОРСКИЙ ТУР"
+    c.setFont(_PDF_FONT_BOLD, 8.5)
+    from reportlab.pdfbase import pdfmetrics
+    txt_w = pdfmetrics.stringWidth(badge_text, _PDF_FONT_BOLD, 8.5)
+    badge_pad_x = 0.35 * cm
+    badge_w = txt_w + 2 * badge_pad_x
+    badge_h = 0.65 * cm
+    badge_x = card_x + 0.4 * cm
+    badge_y = hero_y + hero_h - badge_h - 0.4 * cm
+    c.setFillColor(green_badge)
+    c.roundRect(badge_x, badge_y, badge_w, badge_h, 0.12 * cm, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.drawString(badge_x + badge_pad_x, badge_y + 0.21 * cm, badge_text)
+
+    # ── Текстовый блок: eyebrow + title + subtitle ────────────────
+    content_x = card_x + 1.0 * cm
+    content_w = card_w - 2.0 * cm
+
+    eyebrow_y = hero_y - 0.9 * cm
+    region = (tour.get("region") or "").strip()
+    eyebrow = "АВТОРСКИЙ ТУР"
+    if region:
+        eyebrow += " · " + region.upper()
+    c.setFillColor(muted)
+    c.setFont(_PDF_FONT_BOLD, 8.5)
+    c.drawString(content_x, eyebrow_y, eyebrow)
+
+    # Title (1-2 строки)
+    title = tour.get("title") or "Без названия"
+    title_font_size = 20
+    title_lines = _wrap_text(title, _PDF_FONT_BOLD, title_font_size, content_w)[:2]
+    title_top_y = eyebrow_y - 0.9 * cm
+    c.setFillColor(night)
+    c.setFont(_PDF_FONT_BOLD, title_font_size)
+    title_line_h = 0.85 * cm
+    for i, line in enumerate(title_lines):
+        c.drawString(content_x, title_top_y - i * title_line_h, line)
+    title_block_h = len(title_lines) * title_line_h
+
+    # Subtitle с датами
+    sub_y = title_top_y - title_block_h - 0.1 * cm
+    date_from = tour.get("date_from") or "—"
+    date_to = tour.get("date_to") or "—"
+    c.setFillColor(muted2)
+    c.setFont(_PDF_FONT_REGULAR, 12)
+    c.drawString(content_x, sub_y, f"Даты {date_from} – {date_to}")
+
+    # ── Инфо-карточка с серым фоном (rounded) ─────────────────────
+    info_h = 3.0 * cm
+    info_y = sub_y - 1.5 * cm - info_h
+    info_x = content_x
+    info_w = content_w
+    c.setFillColor(paper)
+    c.roundRect(info_x, info_y, info_w, info_h, 0.35 * cm, fill=1, stroke=0)
+
+    # Верхняя строка: НАПРАВЛЕНИЕ (label + value)
+    pad = 0.7 * cm
+    label_top_y = info_y + info_h - pad
+    c.setFillColor(muted)
+    c.setFont(_PDF_FONT_BOLD, 8)
+    c.drawString(info_x + pad, label_top_y, "НАПРАВЛЕНИЕ")
+    c.setFillColor(night)
+    c.setFont(_PDF_FONT_BOLD, 13)
+    c.drawString(info_x + pad, label_top_y - 0.55 * cm, region or "—")
+
+    # Разделитель внутри инфо-карточки
+    div_y = info_y + 1.15 * cm
+    c.setStrokeColor(divider)
+    c.setLineWidth(0.5)
+    c.line(info_x + pad, div_y, info_x + info_w - pad, div_y)
+
+    # Нижняя строка: ЦЕНА слева label, справа сумма большой
+    c.setFillColor(muted)
+    c.setFont(_PDF_FONT_BOLD, 8)
+    c.drawString(info_x + pad, info_y + 0.55 * cm, "ЦЕНА ОТ")
+    c.setFillColor(night)
+    c.setFont(_PDF_FONT_BOLD, 17)
+    c.drawRightString(info_x + info_w - pad, info_y + 0.45 * cm, tour.get("price") or "—")
+
+    # ── CTA-кнопка ────────────────────────────────────────────────
+    btn_w = 5.5 * cm
+    btn_h = 1.05 * cm
+    btn_x = card_x + card_w / 2 - btn_w / 2
+    btn_y = info_y - 1.5 * cm
+
+    c.setFillColor(green_btn)
+    c.roundRect(btn_x, btn_y, btn_w, btn_h, 0.18 * cm, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont(_PDF_FONT_BOLD, 12)
+    c.drawCentredString(btn_x + btn_w / 2, btn_y + 0.34 * cm, "Открыть тур  →")
+    if tour.get("url"):
+        c.linkURL(tour["url"], (btn_x, btn_y, btn_x + btn_w, btn_y + btn_h),
+                  relative=0, thickness=0)
+
+    # ── Подвал страницы ────────────────────────────────────────────
+    c.setStrokeColor(divider)
+    c.setLineWidth(0.5)
+    c.line(margin_x, 1.4 * cm, W - margin_x, 1.4 * cm)
+    c.setFillColor(muted)
+    c.setFont(_PDF_FONT_REGULAR, 8)
+    c.drawString(margin_x, 1.0 * cm, f"youtravel.me  ·  {TAGLINE}")
+    c.drawRightString(W - margin_x, 1.0 * cm, f"{idx} / {total}")
 
 
 # ============================================================================
