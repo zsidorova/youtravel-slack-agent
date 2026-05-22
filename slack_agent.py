@@ -181,8 +181,21 @@ def _extract_region(item: dict) -> str | None:
     return None
 
 
+YOUTRAVEL_CDN = "https://cf.youtravel.me"
+
+
 def _extract_photo_url(item: dict) -> str | None:
-    """Самые частые поля с фото."""
+    """Достаём фото тура. Основной источник — items.preview_image (относительный
+    путь, префиксим CDN). Остальные поля — на случай если API поменяется."""
+    # Главный кейс: items[].preview_image — отдаётся как относительный путь.
+    preview = item.get("preview_image")
+    if isinstance(preview, str) and preview.strip():
+        p = preview.strip()
+        if p.startswith(("http://", "https://")):
+            return p
+        return YOUTRAVEL_CDN + ("" if p.startswith("/") else "/") + p
+
+    # Фолбэк на другие частые имена полей
     for key in ("photo", "cover", "image", "preview", "thumbnail"):
         v = item.get(key)
         if isinstance(v, str) and v.startswith(("http://", "https://")):
